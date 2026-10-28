@@ -48,6 +48,8 @@ class LiveTraderState:
         self.is_armed = False
         self.execution_mode = "PAPER"
         self.last_update = datetime.now().strftime("%H:%M:%S")
+        self.tick_count = 0
+        self.calc_latency_ms = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         with self.lock:
@@ -70,7 +72,9 @@ class LiveTraderState:
                 "daily_realized_pnl": round(self.daily_realized_pnl, 2),
                 "is_armed": self.is_armed,
                 "execution_mode": self.execution_mode,
-                "last_update": self.last_update
+                "last_update": self.last_update,
+                "tick_count": self.tick_count,
+                "calc_latency_ms": self.calc_latency_ms
             }
 
 
@@ -191,6 +195,7 @@ class QuantTraderHTTPHandler(SimpleHTTPRequestHandler):
                 </div>
             </div>
             <div class="flex items-center space-x-4">
+                <span id="tickStreamBadge" class="text-xs px-2.5 py-1 rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800 font-bold">⚡ TICK-BY-TICK (0.0ms)</span>
                 <span class="text-xs text-slate-400">Daily P&L: <strong id="dailyPnlVal" class="text-emerald-400 font-bold text-sm">₹0.00</strong></span>
                 <span id="marketStatusPill" class="px-2.5 py-1 rounded-full text-xs font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800">● LIVE 09:15 Baseline</span>
             </div>
@@ -392,6 +397,9 @@ class QuantTraderHTTPHandler(SimpleHTTPRequestHandler):
             document.getElementById('modeVal').className = data.execution_mode === 'LIVE' ? 'text-rose-400 font-bold' : 'text-amber-400 font-bold';
 
             // Greek Flows
+            if (data.tick_count !== undefined) {
+                document.getElementById('tickStreamBadge').innerText = `⚡ TICK-BY-TICK (${data.calc_latency_ms || 0}ms | ${data.tick_count} ticks)`;
+            }
             document.getElementById('spotPriceVal').innerText = '₹' + data.underlying_price.toFixed(2);
             document.getElementById('ceVegaVal').innerText = data.ce_vega.toFixed(1);
             document.getElementById('peVegaVal').innerText = data.pe_vega.toFixed(1);
@@ -494,7 +502,7 @@ class QuantTraderHTTPHandler(SimpleHTTPRequestHandler):
             }
         }
 
-        setInterval(fetchState, 2500);
+        setInterval(fetchState, 500);
         fetchState();
     </script>
 </body>

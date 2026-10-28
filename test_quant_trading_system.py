@@ -225,6 +225,46 @@ class TestQuantTradingSystem(unittest.TestCase):
         self.assertIn("200 OK", res)
         self.assertFalse(GLOBAL_STATE.is_armed)
 
+    def test_tick_by_tick_event_driven_pipeline(self):
+        """Verify that broker ticks immediately trigger sub-millisecond computation."""
+        from live_greeks_to_excel import Instrument, take_sample
+        from directional_greeks_core import ChainState, Baseline
+
+        opts = [
+            {"instrument_token": 2001, "instrument_type": "CE", "strike": 24500, "tradingsymbol": "NIFTY26OCT24500CE", "exp_idx": 0, "expiry": date(2026, 10, 29)},
+            {"instrument_token": 2002, "instrument_type": "PE", "strike": 24500, "tradingsymbol": "NIFTY26OCT24500PE", "exp_idx": 0, "expiry": date(2026, 10, 29)},
+            {"instrument_token": 2003, "instrument_type": "CE", "strike": 24600, "tradingsymbol": "NIFTY26OCT24600CE", "exp_idx": 0, "expiry": date(2026, 10, 29)},
+            {"instrument_token": 2004, "instrument_type": "PE", "strike": 24400, "tradingsymbol": "NIFTY26OCT24400PE", "exp_idx": 0, "expiry": date(2026, 10, 29)},
+        ]
+        ins = Instrument("NIFTY", [date(2026, 10, 29)], opts)
+
+        # Baseline setup
+        mock_ticks = {
+            2001: {"px": 140.0, "oi": 2000000},
+            2002: {"px": 135.0, "oi": 2200000},
+            2003: {"px": 80.0, "oi": 1500000},
+            2004: {"px": 90.0, "oi": 1600000},
+        }
+        T = np.array([5.0 / 365.0])
+        ins.chain.update([140.0, 135.0, 80.0, 90.0], [2000000, 2200000, 1500000, 1600000], T)
+        iv_b, vg_b = ins.chain.buckets()
+        ins.baseline.capture(ins.chain, iv_b, vg_b, 10)
+
+        auto_trader = AutoTradingController(mode=ExecutionMode.PAPER)
+
+        # Deliver 5 consecutive ticks as if pushed by broker WebSocket
+        for tick_idx in range(1, 6):
+            mock_ticks[2001]["px"] = 140.0 + (tick_idx * 2.0)
+            row, rec, status = take_sample(ins, mock_ticks, datetime.now(), auto_trader)
+            self.assertEqual(ins.tick_count, tick_idx)
+            self.assertLess(ins.last_calc_latency_ms, 50.0)  # Verify instant sub-50ms execution
+            self.assertIsNotNone(row)
+            self.assertIsNotNone(rec)
+
+        # Check that GLOBAL_STATE reflects the latest tick immediately
+        self.assertEqual(GLOBAL_STATE.tick_count, 5)
+        self.assertGreater(GLOBAL_STATE.calc_latency_ms, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

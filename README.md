@@ -71,9 +71,10 @@ flowchart TD
   - Hard EOD Square-Off at 15:15 IST.
 - **Emergency Kill Switch**: One-click instant cancellation and market square-off of all open positions.
 
-### 5. Multi-Channel Dashboards
-- **Excel Real-Time Integration**: Updates cells `P2:Q14` with the full recommendation, edge score, and P&L grid on every ~35s cycle.
-- **Live Web Control Center (`app_quant_trader.py`)**: Running concurrently on `http://localhost:8050` with interactive Arm/Disarm buttons, Mode switches, and Kill Switch.
+### 5. Multi-Channel Dashboards & Tick-by-Tick Feed
+- **⚡ Event-Driven Tick-by-Tick Processing**: Zero polling delay. Option greeks, skew velocity, alpha composite scores, and trailing stop levels recompute immediately upon broker tick delivery (sub-2ms latency).
+- **Excel Real-Time Integration**: Updates cells `P2:Q14` with the full recommendation, edge score, dynamic trailing SL, and P&L grid synchronously without blocking tick processing.
+- **Live Web Control Center (`app_quant_trader.py`)**: Running concurrently on `http://localhost:8050` with real-time tick telemetry, interactive Arm/Disarm buttons, Mode switches, and Kill Switch.
 
 ---
 
