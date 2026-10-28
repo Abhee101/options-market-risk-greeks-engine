@@ -26,6 +26,22 @@ from order_execution_engine import AutoTradingController, ExecutionMode
 import app_quant_trader
 
 # ------------------------------------------------------------------ settings
+def _load_env_file(filepath=".env"):
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k, v = k.strip(), v.strip().strip('"').strip("'")
+                        if k and k not in os.environ:
+                            os.environ[k] = v
+        except Exception:
+            pass
+
+_load_env_file()
+
 API_KEY = os.environ.get("KITE_API_KEY", "your_api_key")
 ACCESS_TOKEN = os.environ.get("KITE_ACCESS_TOKEN", "your_access_token")
 WORKBOOK = "DirectionalGreeks-2026Oct07.xlsx"
