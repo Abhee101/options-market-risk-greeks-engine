@@ -411,18 +411,18 @@ class QuantModel:
             target_2 = entry_price + (risk_amount * self.t2_mult)
             
             # Trailing Stop Loss Engine
-            current_px = active_position_price if active_position_price > 0 else entry_price
-            if current_px > self.highest_price_seen:
-                self.highest_price_seen = current_px
-            
-            # If in profit past Target 1, trail SL to Breakeven + lock in 50% of T1
-            profit_run = self.highest_price_seen - entry_price
-            if profit_run >= (risk_amount * self.t1_mult):
-                trailing_stop_loss = entry_price + (profit_run * 0.50)
-            elif profit_run >= (risk_amount * 0.50):
-                # Move to Breakeven
-                trailing_stop_loss = entry_price
+            if active_position_price > 0:
+                if active_position_price > self.highest_price_seen:
+                    self.highest_price_seen = active_position_price
+                profit_run = self.highest_price_seen - entry_price
+                if profit_run >= (risk_amount * self.t1_mult):
+                    trailing_stop_loss = max(stop_loss, entry_price + (profit_run * 0.50))
+                elif profit_run >= (risk_amount * 0.50):
+                    trailing_stop_loss = max(stop_loss, entry_price)
+                else:
+                    trailing_stop_loss = stop_loss
             else:
+                self.highest_price_seen = 0.0
                 trailing_stop_loss = stop_loss
 
             max_loss_lot = (entry_price - stop_loss) * self.lot_size

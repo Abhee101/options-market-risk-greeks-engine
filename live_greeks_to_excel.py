@@ -131,7 +131,8 @@ def take_sample(instr, ticks, now, auto_trader):
         # Active position current price (for dynamic trailing SL calculation)
         active_pos_px = 0.0
         if auto_trader and instr.sheet in auto_trader.active_positions:
-            active_pos_px = auto_trader.active_positions[instr.sheet].current_price
+            pos = auto_trader.active_positions[instr.sheet]
+            active_pos_px = ticks.get(pos.instrument_token, {}).get("px", pos.current_price)
 
         # Generate real-time Quant Trade Recommendation
         instr.last_rec = instr.quant_model.generate_recommendation(

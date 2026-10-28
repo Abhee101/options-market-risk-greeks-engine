@@ -13,6 +13,7 @@ Provides:
 import os
 import csv
 import time
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, date, time as dtime
 from enum import Enum
@@ -107,6 +108,7 @@ class AutoTradingController:
         self.max_open_positions = max_open_positions
         self.cooldown_seconds = cooldown_seconds
         self.log_csv_path = log_csv_path
+        self.lock = threading.RLock()
 
         # State tracking
         self.active_positions: Dict[str, Position] = {}
@@ -131,33 +133,37 @@ class AutoTradingController:
 
     def arm(self) -> str:
         """Arms the auto-trading engine."""
-        if self.circuit_breaker_tripped:
-            return "❌ Cannot arm: Daily loss circuit breaker is tripped."
-        self.is_armed = True
-        return f"⚡ Auto-Trading ARMED in {self.mode.value} mode. Monitoring for live setups."
+        with self.lock:
+            if self.circuit_breaker_tripped:
+                return "❌ Cannot arm: Daily loss circuit breaker is tripped."
+            self.is_armed = True
+            return f"⚡ Auto-Trading ARMED in {self.mode.value} mode. Monitoring for live setups."
 
     def disarm(self) -> str:
         """Disarms auto-trading. Active positions remain tracked, but no new trades open."""
-        self.is_armed = False
-        return "🛑 Auto-Trading DISARMED. Recommendation-only mode active."
+        with self.lock:
+            self.is_armed = False
+            return "🛑 Auto-Trading DISARMED. Recommendation-only mode active."
 
     def toggle_mode(self, new_mode: ExecutionMode) -> str:
         """Switch between PAPER and LIVE execution."""
-        if self.active_positions:
-            return "❌ Cannot switch execution mode while open positions exist."
-        self.mode = new_mode
-        return f"Execution mode updated to: {self.mode.value}"
+        with self.lock:
+            if self.active_positions:
+                return "❌ Cannot switch execution mode while open positions exist."
+            self.mode = new_mode
+            return f"Execution mode updated to: {self.mode.value}"
 
     def emergency_kill_switch(self) -> str:
         """
         Immediately disarms the engine and closes all open positions at market.
         """
-        self.is_armed = False
-        closed_count = 0
-        for symbol, pos in list(self.active_positions.items()):
-            self._close_position(pos, pos.current_price, "EMERGENCY_KILL_SWITCH")
-            closed_count += 1
-        return f"🚨 EMERGENCY KILL SWITCH TRIGGERED: Disarmed. {closed_count} positions closed at market."
+        with self.lock:
+            self.is_armed = False
+            closed_count = 0
+            for symbol, pos in list(self.active_positions.items()):
+                self._close_position(pos, pos.current_price, "EMERGENCY_KILL_SWITCH")
+                closed_count += 1
+            return f"🚨 EMERGENCY KILL SWITCH TRIGGERED: Disarmed. {closed_count} positions closed at market."
 
     def on_cycle(
         self,
@@ -170,137 +176,141 @@ class AutoTradingController:
         1. Updates open positions (mark-to-market, trailing SL, target hits, invalidation exits).
         2. Evaluates new trade entries if flat and auto-trader is ARMED.
         """
-        symbol = recommendation.symbol
-        token = recommendation.instrument_token
-        tick = ticks.get(token, {})
-        live_price = tick.get("px", 0.0)
+        with self.lock:
+            symbol = recommendation.symbol
+            status_msg = "Idle"
 
-        status_msg = "Idle"
+            # 1. Update Active Position
+            if symbol in self.active_positions:
+                pos = self.active_positions[symbol]
+                # Cross-verified: track active position's specific instrument token
+                pos_tick = ticks.get(pos.instrument_token, {})
+                live_price = pos_tick.get("px", pos.current_price)
 
-        # 1. Update Active Position
-        if symbol in self.active_positions:
-            pos = self.active_positions[symbol]
-            if live_price > 0:
-                pos.current_price = live_price
-                pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
+                if live_price > 0:
+                    pos.current_price = live_price
+                    pos.unrealized_pnl = (pos.current_price - pos.entry_price) * pos.quantity
 
-                if pos.current_price > pos.highest_price:
-                    pos.highest_price = pos.current_price
+                    if pos.current_price > pos.highest_price:
+                        pos.highest_price = pos.current_price
 
-                # Dynamic Trailing Stop Loss adjustment
-                profit_run = pos.highest_price - pos.entry_price
-                risk_amount = pos.entry_price - pos.stop_loss
-                
-                # If gained past 1:1.5 RR (Target 1), trail SL to lock 50% of peak gains
-                if profit_run >= (risk_amount * 1.5):
-                    new_trailing = pos.entry_price + (profit_run * 0.50)
-                    if new_trailing > pos.trailing_stop_loss:
-                        pos.trailing_stop_loss = new_trailing
-                elif profit_run >= (risk_amount * 0.60):
-                    # Move to Breakeven
-                    if pos.entry_price > pos.trailing_stop_loss:
-                        pos.trailing_stop_loss = pos.entry_price
+                    # Dynamic Trailing Stop Loss adjustment
+                    profit_run = pos.highest_price - pos.entry_price
+                    risk_amount = pos.entry_price - pos.stop_loss
+                    
+                    # If gained past 1:1.5 RR (Target 1), trail SL to lock 50% of peak gains
+                    if profit_run >= (risk_amount * 1.5):
+                        new_trailing = pos.entry_price + (profit_run * 0.50)
+                        if new_trailing > pos.trailing_stop_loss:
+                            pos.trailing_stop_loss = new_trailing
+                    elif profit_run >= (risk_amount * 0.50):
+                        # Move to Breakeven
+                        if pos.entry_price > pos.trailing_stop_loss:
+                            pos.trailing_stop_loss = pos.entry_price
 
-            # Exit Checks
-            # A. Target 2 Hit (Full Profit)
-            if pos.current_price >= pos.target_2 and pos.target_2 > 0:
-                self._close_position(pos, pos.target_2, "TARGET_2_HIT (1:2.5 RR)")
-                status_msg = f"🏆 Target 2 Hit on {pos.contract_symbol} at ₹{pos.target_2}!"
+                # Exit Checks
+                # A. Target 2 Hit (Full Profit)
+                if pos.current_price >= pos.target_2 and pos.target_2 > 0:
+                    fill_px = max(pos.target_2, pos.current_price)
+                    self._close_position(pos, fill_px, "TARGET_2_HIT (1:2.5 RR)")
+                    status_msg = f"🏆 Target 2 Hit on {pos.contract_symbol} at ₹{fill_px}!"
 
-            # B. Trailing Stop Hit (Profit Protection)
-            elif pos.current_price <= pos.trailing_stop_loss and pos.trailing_stop_loss > pos.stop_loss:
-                self._close_position(pos, pos.trailing_stop_loss, "TRAILING_STOP_HIT (Profit Locked)")
-                status_msg = f"🔒 Trailing SL Hit on {pos.contract_symbol} at ₹{pos.trailing_stop_loss}."
+                # B. Trailing Stop Hit (Profit Protection)
+                elif pos.current_price <= pos.trailing_stop_loss and pos.trailing_stop_loss > pos.stop_loss:
+                    fill_px = min(pos.trailing_stop_loss, pos.current_price)
+                    self._close_position(pos, fill_px, "TRAILING_STOP_HIT (Profit Locked)")
+                    status_msg = f"🔒 Trailing SL Hit on {pos.contract_symbol} at ₹{fill_px}."
 
-            # C. Initial Stop Loss Hit
-            elif pos.current_price <= pos.stop_loss and pos.stop_loss > 0:
-                self._close_position(pos, pos.stop_loss, "STOP_LOSS_HIT")
-                status_msg = f"🛑 Stop Loss Hit on {pos.contract_symbol} at ₹{pos.stop_loss}."
+                # C. Initial Stop Loss Hit
+                elif pos.current_price <= pos.stop_loss and pos.stop_loss > 0:
+                    fill_px = min(pos.stop_loss, pos.current_price)
+                    self._close_position(pos, fill_px, "STOP_LOSS_HIT")
+                    status_msg = f"🛑 Stop Loss Hit on {pos.contract_symbol} at ₹{fill_px}."
 
-            # D. Greek Invalidation Exit (Institutional flow reversed)
-            elif "⚠️ Immediate Exit" in recommendation.invalidation_reason:
-                self._close_position(pos, pos.current_price, f"GREEK_INVALIDATION: {recommendation.invalidation_reason}")
-                status_msg = f"⚠️ Greek Invalidation Exit on {pos.contract_symbol}."
+                # D. Greek Invalidation Exit (Institutional flow reversed)
+                elif "⚠️ Immediate Exit" in recommendation.invalidation_reason:
+                    self._close_position(pos, pos.current_price, f"GREEK_INVALIDATION: {recommendation.invalidation_reason}")
+                    status_msg = f"⚠️ Greek Invalidation Exit on {pos.contract_symbol}."
 
-            # E. End of Day Square-Off (15:15 IST)
-            elif now.time() >= dtime(15, 15, 0):
-                self._close_position(pos, pos.current_price, "EOD_SQUARE_OFF (15:15 IST)")
-                status_msg = f"⏰ End-of-Day Square-Off for {pos.contract_symbol}."
+                # E. End of Day Square-Off (15:15 IST)
+                elif now.time() >= dtime(15, 15, 0):
+                    self._close_position(pos, pos.current_price, "EOD_SQUARE_OFF (15:15 IST)")
+                    status_msg = f"⏰ End-of-Day Square-Off for {pos.contract_symbol}."
 
-            return {
-                "action": "MONITORING_POSITION",
-                "message": status_msg,
-                "position": pos.to_dict(),
-                "daily_realized_pnl": self.daily_realized_pnl,
-                "is_armed": self.is_armed,
-            }
-
-        # 2. Check for New Trade Entry
-        if not self.is_armed:
-            return {
-                "action": "RECOMMENDATION_ONLY",
-                "message": "Auto-trader is DISARMED. Signal displayed for user decision.",
-                "recommendation": recommendation.to_dict(),
-                "daily_realized_pnl": self.daily_realized_pnl,
-                "is_armed": self.is_armed,
-            }
-
-        # Safety Gates
-        if self.circuit_breaker_tripped:
-            return {
-                "action": "CIRCUIT_BREAKER",
-                "message": f"Daily loss limit (-₹{self.max_loss_per_day:,.2f}) hit. Trading halted.",
-                "is_armed": False
-            }
-
-        if self.daily_realized_pnl <= -self.max_loss_per_day:
-            self.circuit_breaker_tripped = True
-            self.is_armed = False
-            return {
-                "action": "CIRCUIT_BREAKER_TRIGGERED",
-                "message": f"Daily loss limit (-₹{self.max_loss_per_day:,.2f}) breached. Disarmed.",
-                "is_armed": False
-            }
-
-        if self.trades_taken_today >= self.max_trades_per_day:
-            return {
-                "action": "MAX_TRADES_HIT",
-                "message": f"Max daily trades ({self.max_trades_per_day}) reached.",
-                "is_armed": self.is_armed
-            }
-
-        if time.time() - self.last_exit_time < self.cooldown_seconds:
-            remaining = int(self.cooldown_seconds - (time.time() - self.last_exit_time))
-            return {
-                "action": "COOLDOWN",
-                "message": f"In post-trade cooldown ({remaining}s remaining).",
-                "is_armed": self.is_armed
-            }
-
-        if len(self.active_positions) >= self.max_open_positions:
-            return {
-                "action": "MAX_POSITIONS",
-                "message": f"Max concurrent positions ({self.max_open_positions}) active.",
-                "is_armed": self.is_armed
-            }
-
-        # Evaluate Qualified Entry Signal
-        if recommendation.signal in (TradeSignalType.BUY_CALL, TradeSignalType.BUY_PUT):
-            if recommendation.entry_price > 0 and recommendation.contract_symbol != "NONE":
-                pos = self._execute_entry(recommendation, now)
                 return {
-                    "action": "ENTRY_EXECUTED",
-                    "message": f"🚀 {recommendation.signal.value} EXECUTED: {pos.contract_symbol} @ ₹{pos.entry_price:.2f}",
+                    "action": "MONITORING_POSITION",
+                    "message": status_msg,
                     "position": pos.to_dict(),
                     "daily_realized_pnl": self.daily_realized_pnl,
+                    "is_armed": self.is_armed,
+                }
+
+            # 2. Check for New Trade Entry
+            if not self.is_armed:
+                return {
+                    "action": "RECOMMENDATION_ONLY",
+                    "message": "Auto-trader is DISARMED. Signal displayed for user decision.",
+                    "recommendation": recommendation.to_dict(),
+                    "daily_realized_pnl": self.daily_realized_pnl,
+                    "is_armed": self.is_armed,
+                }
+
+            # Safety Gates
+            if self.circuit_breaker_tripped:
+                return {
+                    "action": "CIRCUIT_BREAKER",
+                    "message": f"Daily loss limit (-₹{self.max_loss_per_day:,.2f}) hit. Trading halted.",
+                    "is_armed": False
+                }
+
+            if self.daily_realized_pnl <= -self.max_loss_per_day:
+                self.circuit_breaker_tripped = True
+                self.is_armed = False
+                return {
+                    "action": "CIRCUIT_BREAKER_TRIGGERED",
+                    "message": f"Daily loss limit (-₹{self.max_loss_per_day:,.2f}) breached. Disarmed.",
+                    "is_armed": False
+                }
+
+            if self.trades_taken_today >= self.max_trades_per_day:
+                return {
+                    "action": "MAX_TRADES_HIT",
+                    "message": f"Max daily trades ({self.max_trades_per_day}) reached.",
                     "is_armed": self.is_armed
                 }
 
-        return {
-            "action": "WAITING_FOR_EDGE",
-            "message": "Scanning live Greek flows for high-probability skew divergence.",
-            "is_armed": self.is_armed
-        }
+            if time.time() - self.last_exit_time < self.cooldown_seconds:
+                remaining = int(self.cooldown_seconds - (time.time() - self.last_exit_time))
+                return {
+                    "action": "COOLDOWN",
+                    "message": f"In post-trade cooldown ({remaining}s remaining).",
+                    "is_armed": self.is_armed
+                }
+
+            if len(self.active_positions) >= self.max_open_positions:
+                return {
+                    "action": "MAX_POSITIONS",
+                    "message": f"Max concurrent positions ({self.max_open_positions}) active.",
+                    "is_armed": self.is_armed
+                }
+
+            # Evaluate Qualified Entry Signal
+            if recommendation.signal in (TradeSignalType.BUY_CALL, TradeSignalType.BUY_PUT):
+                if recommendation.entry_price > 0 and recommendation.contract_symbol != "NONE":
+                    pos = self._execute_entry(recommendation, now)
+                    return {
+                        "action": "ENTRY_EXECUTED",
+                        "message": f"🚀 {recommendation.signal.value} EXECUTED: {pos.contract_symbol} @ ₹{pos.entry_price:.2f}",
+                        "position": pos.to_dict(),
+                        "daily_realized_pnl": self.daily_realized_pnl,
+                        "is_armed": self.is_armed
+                    }
+
+            return {
+                "action": "WAITING_FOR_EDGE",
+                "message": "Scanning live Greek flows for high-probability skew divergence.",
+                "is_armed": self.is_armed
+            }
 
     def _execute_entry(self, rec: TradeRecommendation, now: datetime) -> Position:
         """Executes trade entry in Paper or Live mode."""
