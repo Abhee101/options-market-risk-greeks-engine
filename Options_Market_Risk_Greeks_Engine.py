@@ -68,6 +68,20 @@ from scipy.stats import norm
 
 print("Libraries imported successfully")
 
+try:
+    display
+except NameError:
+    display = print
+
+try:
+    get_ipython
+except NameError:
+    class DummyIPython:
+        def run_line_magic(self, magic, arg):
+            pass
+    def get_ipython():
+        return DummyIPython()
+
 
 # In[49]:
 
@@ -176,6 +190,12 @@ def black_scholes_price(S, K, T, r, sigma, option_type="call"):
         )
 
     return price
+
+def black_scholes_call(S, K, T, r, sigma):
+    return black_scholes_price(S, K, T, r, sigma, "call")
+
+def black_scholes_put(S, K, T, r, sigma):
+    return black_scholes_price(S, K, T, r, sigma, "put")
 
 
 # In[56]:
@@ -460,6 +480,9 @@ plt.show()
 
 # Step 22: Volatility Shock Analysis
 
+implied_vol = sigma
+lot_size = 1
+vega = call_greeks['Vega']
 vol_shocks = np.array([-0.20, -0.10, -0.05, 0, 0.05, 0.10, 0.20])
 
 volatility_scenario = []
@@ -526,6 +549,9 @@ print("Call Vega:", vega)
 
 # Step 22: Volatility Shock Analysis
 
+implied_vol = sigma
+lot_size = 1
+vega = call_greeks['Vega']
 vol_shocks = np.array([-0.20, -0.10, -0.05, 0, 0.05, 0.10, 0.20])
 
 volatility_scenario = []
@@ -8011,7 +8037,9 @@ audit_cols = [
     'Covered Call Return',
     'Premium Yield',
     'Covered Call Advantage',
-    'Market Regime'
+    'Market Regime',
+    'Long NIFTY Wealth',
+    'Covered Call Wealth'
 ]
 
 audit_df = backtest_df[audit_cols].copy()

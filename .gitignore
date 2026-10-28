@@ -3,3 +3,7 @@ __pycache__/
 *.py[cod]
 *.class
 .ipynb_checkpoints/
+.venv/
+*.csv
+*.xlsx
+
