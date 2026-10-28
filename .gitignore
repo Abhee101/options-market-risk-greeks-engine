@@ -7,4 +7,7 @@ __pycache__/
 *.csv
 *.xlsx
 *.npz
+.env
+*.env
+kite_session.json
 
