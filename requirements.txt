@@ -6,3 +6,5 @@ seaborn
 statsmodels
 yfinance
 openpyxl
+kiteconnect
+xlwings
